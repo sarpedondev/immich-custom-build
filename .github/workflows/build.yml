@@ -1,0 +1,187 @@
+name: Build patched Immich
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Upstream release channel
+        type: choice
+        default: configured
+        options: [configured, stable, prerelease]
+
+concurrency:
+  group: immich-publisher
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.select.outputs.version }}
+      upstream_sha: ${{ steps.select.outputs.upstream_sha }}
+      build_key: ${{ steps.select.outputs.build_key }}
+      image: ${{ steps.select.outputs.image }}
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test release selection and patch application
+        run: python3 -m unittest discover -s tests -v
+      - name: Select release and compute build identity
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ inputs.channel || vars.RELEASE_CHANNEL || 'configured' }}
+        run: python3 scripts/build.py select
+
+  server-checks:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch upstream and apply patch
+        working-directory: .
+        env:
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
+      - uses: immich-app/devtools/actions/use-mise@06a9ef925332c91be647d6256642b86b398592c8 # use-mise-action-v3.2.1
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./source
+      - name: Server formatting, lint, type checks and unit tests
+        run: mise run //server:ci-unit
+
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch upstream and apply patch
+        working-directory: .
+        env:
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: zulu
+          java-version: "17"
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ""
+      - uses: immich-app/devtools/actions/use-mise@06a9ef925332c91be647d6256642b86b398592c8 # use-mise-action-v3.2.1
+        with:
+          github_token: ${{ github.token }}
+          working_directory: ./source/mobile
+      - name: Install dependencies
+        run: mise //mobile:install:ci
+      - name: Generate mobile sources
+        run: mise //mobile:codegen
+      - name: Analyze mobile code
+        run: mise //mobile:analyze:dart
+      - name: Run mobile unit tests
+        run: mise //mobile:test
+      - name: Build Android APK
+        working-directory: source/mobile
+        env:
+          PR_NUMBER: cloudflare
+        run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: immich-android-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build_key }}
+          path: source/mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  publish:
+    needs: [prepare, server-checks, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch upstream and apply patch
+        env:
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish server image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: source
+          file: source/server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ needs.prepare.outputs.image }}:custom
+            ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+            ${{ needs.prepare.outputs.image }}:build-${{ needs.prepare.outputs.build_key }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            io.immich.upstream.revision=${{ needs.prepare.outputs.upstream_sha }}
+            io.immich.custom.build=${{ needs.prepare.outputs.build_key }}
+          build-args: |
+            BUILD_ID=${{ github.run_id }}
+            BUILD_IMAGE=${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+            BUILD_SOURCE_REF=${{ needs.prepare.outputs.version }}
+            BUILD_SOURCE_COMMIT=${{ needs.prepare.outputs.upstream_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  record:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Record successful build for the next daily check
+        env:
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          BUILD_KEY: ${{ needs.prepare.outputs.build_key }}
+          RECIPE_COMMIT: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/build.py record

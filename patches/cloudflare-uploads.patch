@@ -1,0 +1,634 @@
+diff --git a/mobile/lib/repositories/upload.repository.dart b/mobile/lib/repositories/upload.repository.dart
+index 136684093ce4eb38f8c763e8c67964a811cedbc3..54144661bd82d40304e3351f0ce59160047b1911 100644
+--- a/mobile/lib/repositories/upload.repository.dart
++++ b/mobile/lib/repositories/upload.repository.dart
+@@ -1,6 +1,7 @@
+ import 'dart:async';
+ import 'dart:convert';
+ import 'dart:io';
++import 'dart:math';
+ 
+ import 'package:background_downloader/background_downloader.dart';
+ import 'package:hooks_riverpod/hooks_riverpod.dart';
+@@ -14,6 +15,8 @@ import 'package:logging/logging.dart';
+ 
+ final uploadRepositoryProvider = Provider((ref) => UploadRepository());
+ 
++const _chunkUploadThreshold = 95 * 1024 * 1024;
++
+ class UploadRepository {
+   final Logger logger = Logger('UploadRepository');
+   void Function(TaskStatusUpdate)? onUploadStatus;
+@@ -67,12 +70,33 @@ class UploadRepository {
+   }
+ 
+   Future<void> getUploadInfo() async {
+-    final [enqueuedTasks, runningTasks, canceledTasks, waitingTasks, pausedTasks] = await Future.wait([
+-      FileDownloader().database.allRecordsWithStatus(TaskStatus.enqueued, group: kBackupGroup),
+-      FileDownloader().database.allRecordsWithStatus(TaskStatus.running, group: kBackupGroup),
+-      FileDownloader().database.allRecordsWithStatus(TaskStatus.canceled, group: kBackupGroup),
+-      FileDownloader().database.allRecordsWithStatus(TaskStatus.waitingToRetry, group: kBackupGroup),
+-      FileDownloader().database.allRecordsWithStatus(TaskStatus.paused, group: kBackupGroup),
++    final [
++      enqueuedTasks,
++      runningTasks,
++      canceledTasks,
++      waitingTasks,
++      pausedTasks,
++    ] = await Future.wait([
++      FileDownloader().database.allRecordsWithStatus(
++        TaskStatus.enqueued,
++        group: kBackupGroup,
++      ),
++      FileDownloader().database.allRecordsWithStatus(
++        TaskStatus.running,
++        group: kBackupGroup,
++      ),
++      FileDownloader().database.allRecordsWithStatus(
++        TaskStatus.canceled,
++        group: kBackupGroup,
++      ),
++      FileDownloader().database.allRecordsWithStatus(
++        TaskStatus.waitingToRetry,
++        group: kBackupGroup,
++      ),
++      FileDownloader().database.allRecordsWithStatus(
++        TaskStatus.paused,
++        group: kBackupGroup,
++      ),
+     ]);
+ 
+     dPrint(
+@@ -99,6 +123,19 @@ class UploadRepository {
+   }) async {
+     final String savedEndpoint = Store.get(StoreKey.serverEndpoint);
+ 
++    if (file.lengthSync() >= _chunkUploadThreshold) {
++      return _uploadFileInChunks(
++        file: file,
++        originalFileName: originalFileName,
++        fields: fields,
++        cancelToken: cancelToken,
++        onProgress: onProgress,
++        logContext: logContext,
++        client: httpClient ?? NetworkRepository.client,
++        endpoint: savedEndpoint,
++      );
++    }
++
+     ProgressMultipartRequest buildRequest() {
+       final request = ProgressMultipartRequest(
+         'POST',
+@@ -107,7 +144,14 @@ class UploadRepository {
+         onProgress: onProgress,
+       );
+       request.fields.addAll(fields);
+-      request.files.add(MultipartFile("assetData", file.openRead(), file.lengthSync(), filename: originalFileName));
++      request.files.add(
++        MultipartFile(
++          "assetData",
++          file.openRead(),
++          file.lengthSync(),
++          filename: originalFileName,
++        ),
++      );
+       return request;
+     }
+ 
+@@ -119,7 +163,9 @@ class UploadRepository {
+       } on RequestAbortedException {
+         rethrow;
+       } on ClientException catch (error) {
+-        logger.warning("Upload $logContext failed before a response, resending once: $error");
++        logger.warning(
++          "Upload $logContext failed before a response, resending once: $error",
++        );
+         response = await client.send(buildRequest());
+       }
+ 
+@@ -130,7 +176,10 @@ class UploadRepository {
+ 
+         if (response.statusCode == 413) {
+           errorMessage = 'Error(413) File is too large to upload';
+-          return UploadResult.error(statusCode: response.statusCode, errorMessage: errorMessage);
++          return UploadResult.error(
++            statusCode: response.statusCode,
++            errorMessage: errorMessage,
++          );
+         }
+ 
+         try {
+@@ -142,14 +191,21 @@ class UploadRepository {
+               : 'Upload failed with status ${response.statusCode}';
+         }
+ 
+-        return UploadResult.error(statusCode: response.statusCode, errorMessage: errorMessage);
++        return UploadResult.error(
++          statusCode: response.statusCode,
++          errorMessage: errorMessage,
++        );
+       }
+ 
+       try {
+         final responseBody = jsonDecode(responseBodyString);
+-        return UploadResult.success(remoteAssetId: responseBody['id'] as String);
++        return UploadResult.success(
++          remoteAssetId: responseBody['id'] as String,
++        );
+       } catch (e) {
+-        return UploadResult.error(errorMessage: 'Failed to parse server response');
++        return UploadResult.error(
++          errorMessage: 'Failed to parse server response',
++        );
+       }
+     } on RequestAbortedException {
+       logger.warning("Upload $logContext was cancelled");
+@@ -159,10 +215,137 @@ class UploadRepository {
+       return UploadResult.error(errorMessage: error.toString());
+     }
+   }
++
++  Future<UploadResult> _uploadFileInChunks({
++    required File file,
++    required String originalFileName,
++    required Map<String, String> fields,
++    required Completer<void>? cancelToken,
++    required void Function(int bytes, int totalBytes)? onProgress,
++    required String logContext,
++    required Client client,
++    required String endpoint,
++  }) async {
++    try {
++      final fileSize = file.lengthSync();
++      final createBody = <String, dynamic>{
++        'filename': originalFileName,
++        'fileSize': fileSize,
++        'fileCreatedAt': fields['fileCreatedAt'],
++        'fileModifiedAt': fields['fileModifiedAt'],
++        'isFavorite': fields['isFavorite'] ?? 'false',
++        if (fields['duration'] != null)
++          'duration': int.tryParse(fields['duration']!),
++        if (fields['visibility'] != null) 'visibility': fields['visibility'],
++        if (fields['livePhotoVideoId'] != null)
++          'livePhotoVideoId': fields['livePhotoVideoId'],
++        if (fields['metadata'] != null) 'metadata': fields['metadata'],
++      };
++      final createResponse = await client.post(
++        Uri.parse('$endpoint/assets/upload-session'),
++        headers: {'Content-Type': 'application/json'},
++        body: jsonEncode(createBody),
++      );
++      if (createResponse.statusCode != 201) {
++        return UploadResult.error(
++          statusCode: createResponse.statusCode,
++          errorMessage: createResponse.body,
++        );
++      }
++
++      final session = jsonDecode(createResponse.body) as Map<String, dynamic>;
++      final sessionId = session['id'] as String;
++      final chunkSize = session['chunkSize'] as int;
++      final chunkCount = session['chunkCount'] as int;
++
++      for (var index = 0; index < chunkCount; index++) {
++        if (cancelToken?.isCompleted ?? false) {
++          return UploadResult.cancelled();
++        }
++
++        final start = index * chunkSize;
++        final end = min(start + chunkSize, fileSize);
++        final request = ProgressStreamedRequest(
++          'PUT',
++          Uri.parse('$endpoint/assets/upload-session/$sessionId/$index'),
++          abortTrigger: cancelToken?.future,
++          onProgress: (sent) => onProgress?.call(start + sent, fileSize),
++        );
++        request.headers['Content-Type'] = 'application/octet-stream';
++        request.contentLength = end - start;
++        final responseFuture = client.send(request);
++        await request.sink.addStream(file.openRead(start, end));
++        await request.sink.close();
++        final response = await responseFuture;
++        final responseBody = await response.stream.bytesToString();
++        if (response.statusCode != 204) {
++          return UploadResult.error(
++            statusCode: response.statusCode,
++            errorMessage: responseBody,
++          );
++        }
++      }
++
++      final completeResponse = await client.post(
++        Uri.parse('$endpoint/assets/upload-session/$sessionId/complete'),
++      );
++      if (![200, 201].contains(completeResponse.statusCode)) {
++        return UploadResult.error(
++          statusCode: completeResponse.statusCode,
++          errorMessage: completeResponse.body,
++        );
++      }
++      final responseBody =
++          jsonDecode(completeResponse.body) as Map<String, dynamic>;
++      return UploadResult.success(remoteAssetId: responseBody['id'] as String);
++    } on RequestAbortedException {
++      logger.warning('Upload $logContext was cancelled');
++      return UploadResult.cancelled();
++    } catch (error, stackTrace) {
++      logger.warning('Chunked upload $logContext failed: $error: $stackTrace');
++      return UploadResult.error(errorMessage: error.toString());
++    }
++  }
++}
++
++class ProgressStreamedRequest extends StreamedRequest with Abortable {
++  ProgressStreamedRequest(
++    super.method,
++    super.url, {
++    this.abortTrigger,
++    this.onProgress,
++  });
++
++  @override
++  final Future<void>? abortTrigger;
++
++  final void Function(int bytes)? onProgress;
++
++  @override
++  ByteStream finalize() {
++    final stream = super.finalize();
++    var bytes = 0;
++    return ByteStream(
++      stream.transform(
++        StreamTransformer.fromHandlers(
++          handleData: (List<int> data, EventSink<List<int>> sink) {
++            bytes += data.length;
++            onProgress?.call(bytes);
++            sink.add(data);
++          },
++        ),
++      ),
++    );
++  }
+ }
+ 
+ class ProgressMultipartRequest extends MultipartRequest with Abortable {
+-  ProgressMultipartRequest(super.method, super.url, {this.abortTrigger, this.onProgress});
++  ProgressMultipartRequest(
++    super.method,
++    super.url, {
++    this.abortTrigger,
++    this.onProgress,
++  });
+ 
+   @override
+   final Future<void>? abortTrigger;
+@@ -207,11 +390,20 @@ class UploadResult {
+   });
+ 
+   factory UploadResult.success({required String remoteAssetId}) {
+-    return UploadResult(isSuccess: true, isCancelled: false, remoteAssetId: remoteAssetId);
++    return UploadResult(
++      isSuccess: true,
++      isCancelled: false,
++      remoteAssetId: remoteAssetId,
++    );
+   }
+ 
+   factory UploadResult.error({String? errorMessage, int? statusCode}) {
+-    return UploadResult(isSuccess: false, isCancelled: false, errorMessage: errorMessage, statusCode: statusCode);
++    return UploadResult(
++      isSuccess: false,
++      isCancelled: false,
++      errorMessage: errorMessage,
++      statusCode: statusCode,
++    );
+   }
+ 
+   factory UploadResult.cancelled() {
+diff --git a/server/src/controllers/asset-media.controller.ts b/server/src/controllers/asset-media.controller.ts
+index c357c1343062de3ee88e0ea938b2c0174164c86c..59407b0039ac5a09dafc03db065051798a10fc11 100644
+--- a/server/src/controllers/asset-media.controller.ts
++++ b/server/src/controllers/asset-media.controller.ts
+@@ -7,7 +7,10 @@ import {
+   Next,
+   Param,
+   ParseFilePipe,
++  ParseIntPipe,
++  ParseUUIDPipe,
+   Post,
++  Put,
+   Query,
+   Req,
+   Res,
+@@ -24,6 +27,7 @@ import {
+ } from 'src/dtos/asset-media-response.dto';
+ import {
+   AssetBulkUploadCheckDto,
++  AssetChunkUploadCreateDto,
+   AssetMediaCreateDto,
+   AssetMediaOptionsDto,
+   AssetMediaSize,
+@@ -89,6 +93,31 @@ export class AssetMediaController {
+     return responseDto;
+   }
+ 
++  @Post('upload-session')
++  @Authenticated({ permission: Permission.AssetUpload })
++  @HttpCode(HttpStatus.CREATED)
++  createChunkUpload(@Auth() auth: AuthDto, @Body() dto: AssetChunkUploadCreateDto) {
++    return this.service.createChunkUpload(auth, dto);
++  }
++
++  @Put('upload-session/:id/:index')
++  @Authenticated({ permission: Permission.AssetUpload })
++  @HttpCode(HttpStatus.NO_CONTENT)
++  async uploadChunk(
++    @Auth() auth: AuthDto,
++    @Param('id', ParseUUIDPipe) id: string,
++    @Param('index', ParseIntPipe) index: number,
++    @Req() req: Request,
++  ): Promise<void> {
++    await this.service.uploadChunk(auth, id, index, req);
++  }
++
++  @Post('upload-session/:id/complete')
++  @Authenticated({ permission: Permission.AssetUpload })
++  completeChunkUpload(@Auth() auth: AuthDto, @Param('id', ParseUUIDPipe) id: string): Promise<AssetMediaResponseDto> {
++    return this.service.completeChunkUpload(auth, id);
++  }
++
+   @Get(':id/original')
+   @FileResponse()
+   @Authenticated({ permission: Permission.AssetDownload, sharedLink: true })
+diff --git a/server/src/dtos/asset-media.dto.ts b/server/src/dtos/asset-media.dto.ts
+index 88542a11e338039eadd27dff6e459878a967914a..76b0adbad186909001a59c8e92386eedf9da7b09 100644
+--- a/server/src/dtos/asset-media.dto.ts
++++ b/server/src/dtos/asset-media.dto.ts
+@@ -63,6 +63,14 @@ const AssetMediaCreateSchema = AssetMediaBaseSchema.extend({
+     .meta({ type: 'string', format: 'binary' }),
+ }).meta({ id: 'AssetMediaCreateDto' });
+ 
++const AssetChunkUploadCreateSchema = AssetMediaCreateSchema.omit({
++  [UploadFieldName.ASSET_DATA]: true,
++  [UploadFieldName.SIDECAR_DATA]: true,
++}).extend({
++  filename: z.string().min(1),
++  fileSize: z.coerce.number().int().positive(),
++});
++
+ const AssetBulkUploadCheckItemSchema = z
+   .object({
+     id: z.string().describe('Client-side identifier echoed in the response to match results to inputs (e.g. filename)'),
+@@ -78,4 +86,5 @@ const AssetBulkUploadCheckSchema = z
+ 
+ export class AssetMediaOptionsDto extends createZodDto(AssetMediaOptionsSchema) {}
+ export class AssetMediaCreateDto extends createZodDto(AssetMediaCreateSchema) {}
++export class AssetChunkUploadCreateDto extends createZodDto(AssetChunkUploadCreateSchema) {}
+ export class AssetBulkUploadCheckDto extends createZodDto(AssetBulkUploadCheckSchema) {}
+diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
+index 7ee74d98706c8a4fa4cd51fa93cbdf9efadec342..cf52772dc6dcb93fa918b0be1c3d0398595c23f2 100644
+--- a/server/src/repositories/storage.repository.ts
++++ b/server/src/repositories/storage.repository.ts
+@@ -76,8 +76,8 @@ export class StorageRepository {
+     return fs.writeFile(filepath, buffer, { flag: 'wx' });
+   }
+ 
+-  createWriteStream(filepath: string): Writable {
+-    return createWriteStream(filepath, { flags: 'w', flush: true });
++  createWriteStream(filepath: string, options: { flags?: 'w' | 'a' } = {}): Writable {
++    return createWriteStream(filepath, { flags: options.flags ?? 'w', flush: true });
+   }
+ 
+   createOrOverwriteFile(filepath: string, buffer: Buffer) {
+diff --git a/server/src/services/asset-media.service.spec.ts b/server/src/services/asset-media.service.spec.ts
+index 14527debba61f6f127c49423ab60f58695c2a648..39e9ed58d4a5d53268c0a10122d1c4ef8cda87cc 100644
+--- a/server/src/services/asset-media.service.spec.ts
++++ b/server/src/services/asset-media.service.spec.ts
+@@ -6,7 +6,12 @@ import {
+ } from '@nestjs/common';
+ import { AssetFile } from 'src/database';
+ import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto';
+-import { AssetMediaCreateDto, AssetMediaSize, UploadFieldName } from 'src/dtos/asset-media.dto';
++import {
++  AssetChunkUploadCreateDto,
++  AssetMediaCreateDto,
++  AssetMediaSize,
++  UploadFieldName,
++} from 'src/dtos/asset-media.dto';
+ import { MapAsset } from 'src/dtos/asset-response.dto';
+ import { AssetEditAction } from 'src/dtos/editing.dto';
+ import { AssetFileType, AssetType, AssetVisibility, CacheControl, JobName } from 'src/enum';
+@@ -177,6 +182,32 @@ describe(AssetMediaService.name, () => {
+     ({ sut, mocks } = newTestService(AssetMediaService));
+   });
+ 
++  describe('createChunkUpload', () => {
++    it('should create a session with 64 MiB chunks', async () => {
++      const dto = {
++        ...createDto,
++        filename: 'video.mp4',
++        fileSize: 64 * 1024 * 1024 + 1,
++      } as AssetChunkUploadCreateDto;
++
++      await expect(sut.createChunkUpload(authStub.user1, dto)).resolves.toEqual({
++        id: expect.any(String),
++        chunkSize: 64 * 1024 * 1024,
++        chunkCount: 2,
++      });
++      expect(mocks.storage.mkdirSync).toHaveBeenCalledWith(expect.stringMatching(/\.chunks\/.+/));
++      expect(mocks.storage.createFile).toHaveBeenCalledWith(
++        expect.stringMatching(/\.chunks\/.+\/session\.json/),
++        expect.any(Buffer),
++      );
++    });
++
++    it('should reject unsupported files', async () => {
++      const dto = { ...createDto, filename: 'malware.exe', fileSize: 100 } as AssetChunkUploadCreateDto;
++      await expect(sut.createChunkUpload(authStub.user1, dto)).rejects.toBeInstanceOf(BadRequestException);
++    });
++  });
++
+   describe('getUploadAssetIdByChecksum', () => {
+     it('should return if checksum is undefined', async () => {
+       await expect(sut.getUploadAssetIdByChecksum(authStub.admin)).resolves.toBe(undefined);
+diff --git a/server/src/services/asset-media.service.ts b/server/src/services/asset-media.service.ts
+index 1bb9d1e5b6fce87cff143dedc39f92af44bc19b7..aef2e50e0077789de1fc32addc74964a179e7366 100644
+--- a/server/src/services/asset-media.service.ts
++++ b/server/src/services/asset-media.service.ts
+@@ -1,4 +1,8 @@
+ import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
++import { createHash, randomUUID } from 'node:crypto';
++import { join } from 'node:path';
++import { Transform } from 'node:stream';
++import { pipeline } from 'node:stream/promises';
+ import sanitize from 'sanitize-filename';
+ import { StorageCore } from 'src/cores/storage.core';
+ import { Asset, AuthSharedLink } from 'src/database';
+@@ -11,6 +15,7 @@ import {
+ } from 'src/dtos/asset-media-response.dto';
+ import {
+   AssetBulkUploadCheckDto,
++  AssetChunkUploadCreateDto,
+   AssetMediaCreateDto,
+   AssetMediaOptionsDto,
+   AssetMediaSize,
+@@ -41,8 +46,159 @@ export interface AssetMediaRedirectResponse {
+   targetSize: AssetMediaSize | 'original';
+ }
+ 
++const CHUNK_SIZE = 64 * 1024 * 1024;
++
++interface ChunkUploadSession {
++  id: string;
++  ownerId: string;
++  filename: string;
++  fileSize: number;
++  chunkCount: number;
++  createdAt: string;
++  dto: Omit<AssetChunkUploadCreateDto, 'fileCreatedAt' | 'fileModifiedAt'> & {
++    fileCreatedAt: string;
++    fileModifiedAt: string;
++  };
++}
++
+ @Injectable()
+ export class AssetMediaService extends BaseService {
++  private getChunkUploadFolder(ownerId: string, id: string): string {
++    return join(StorageCore.getFolderLocation(StorageFolder.Upload, ownerId), '.chunks', id);
++  }
++
++  private async getChunkUploadSession(auth: AuthDto, id: string): Promise<ChunkUploadSession> {
++    const metadataPath = join(this.getChunkUploadFolder(auth.user.id, id), 'session.json');
++    try {
++      const session = await this.storageRepository.readJsonFile<ChunkUploadSession>(metadataPath);
++      if (session.ownerId !== auth.user.id) {
++        throw new NotFoundException('Upload session not found');
++      }
++      return session;
++    } catch (error) {
++      if (error instanceof NotFoundException) {
++        throw error;
++      }
++      throw new NotFoundException('Upload session not found');
++    }
++  }
++
++  async createChunkUpload(auth: AuthDto, dto: AssetChunkUploadCreateDto) {
++    await this.requireAccess({ auth, permission: Permission.AssetUpload, ids: [auth.user.id] });
++    this.requireQuota(auth, dto.fileSize);
++
++    if (!mimeTypes.isAsset(dto.filename)) {
++      throw new BadRequestException(`Unsupported file type ${dto.filename}`);
++    }
++
++    const id = randomUUID();
++    const folder = this.getChunkUploadFolder(auth.user.id, id);
++    this.storageRepository.mkdirSync(folder);
++    const session: ChunkUploadSession = {
++      id,
++      ownerId: auth.user.id,
++      filename: dto.filename,
++      fileSize: dto.fileSize,
++      chunkCount: Math.ceil(dto.fileSize / CHUNK_SIZE),
++      createdAt: new Date().toISOString(),
++      dto: {
++        ...dto,
++        fileCreatedAt: dto.fileCreatedAt.toISOString(),
++        fileModifiedAt: dto.fileModifiedAt.toISOString(),
++      },
++    };
++    await this.storageRepository.createFile(join(folder, 'session.json'), Buffer.from(JSON.stringify(session)));
++    return { id, chunkSize: CHUNK_SIZE, chunkCount: session.chunkCount };
++  }
++
++  async uploadChunk(auth: AuthDto, id: string, index: number, input: NodeJS.ReadableStream): Promise<void> {
++    const session = await this.getChunkUploadSession(auth, id);
++    if (index < 0 || index >= session.chunkCount) {
++      throw new BadRequestException('Invalid chunk index');
++    }
++
++    const expectedSize = index === session.chunkCount - 1 ? session.fileSize - index * CHUNK_SIZE : CHUNK_SIZE;
++    const folder = this.getChunkUploadFolder(auth.user.id, id);
++    const chunkPath = join(folder, `chunk-${index}`);
++    let received = 0;
++    const limiter = new Transform({
++      transform(chunk: Buffer, _encoding, callback) {
++        received += chunk.length;
++        callback(received > expectedSize ? new BadRequestException('Chunk is larger than expected') : null, chunk);
++      },
++    });
++
++    try {
++      await pipeline(input, limiter, this.storageRepository.createWriteStream(chunkPath));
++      if (received !== expectedSize) {
++        throw new BadRequestException(`Invalid chunk size: expected ${expectedSize}, received ${received}`);
++      }
++    } catch (error) {
++      await this.storageRepository.unlink(chunkPath);
++      throw error;
++    }
++  }
++
++  async completeChunkUpload(auth: AuthDto, id: string): Promise<AssetMediaResponseDto> {
++    const session = await this.getChunkUploadSession(auth, id);
++    const sessionFolder = this.getChunkUploadFolder(auth.user.id, id);
++    for (let index = 0; index < session.chunkCount; index++) {
++      const expectedSize = index === session.chunkCount - 1 ? session.fileSize - index * CHUNK_SIZE : CHUNK_SIZE;
++      try {
++        const stat = await this.storageRepository.stat(join(sessionFolder, `chunk-${index}`));
++        if (stat.size !== expectedSize) {
++          throw new BadRequestException(`Invalid chunk ${index}`);
++        }
++      } catch (error) {
++        if (error instanceof BadRequestException) {
++          throw error;
++        }
++        throw new BadRequestException(`Missing chunk ${index}`);
++      }
++    }
++
++    const fileId = randomUUID();
++    const uploadFolder = StorageCore.getNestedFolder(StorageFolder.Upload, auth.user.id, fileId);
++    this.storageRepository.mkdirSync(uploadFolder);
++    const originalPath = join(uploadFolder, sanitize(`${fileId}${getFilenameExtension(session.filename)}`));
++    const hash = createHash('sha1');
++
++    try {
++      for (let index = 0; index < session.chunkCount; index++) {
++        const chunk = this.storageRepository.createPlainReadStream(join(sessionFolder, `chunk-${index}`));
++        const hasher = new Transform({
++          transform(data: Buffer, _encoding, callback) {
++            hash.update(data);
++            callback(null, data);
++          },
++        });
++        await pipeline(
++          chunk,
++          hasher,
++          this.storageRepository.createWriteStream(originalPath, { flags: index === 0 ? 'w' : 'a' }),
++        );
++      }
++
++      const dto: AssetMediaCreateDto = {
++        ...session.dto,
++        fileCreatedAt: new Date(session.dto.fileCreatedAt),
++        fileModifiedAt: new Date(session.dto.fileModifiedAt),
++      };
++      const response = await this.uploadAsset(auth, dto, {
++        uuid: fileId,
++        checksum: hash.digest(),
++        originalPath,
++        originalName: session.filename,
++        size: session.fileSize,
++      });
++      await this.storageRepository.unlinkDir(sessionFolder, { recursive: true, force: true });
++      return response;
++    } catch (error) {
++      await this.storageRepository.unlink(originalPath);
++      throw error;
++    }
++  }
++
+   async getUploadAssetIdByChecksum(auth: AuthDto, checksum?: string): Promise<AssetMediaResponseDto | undefined> {
+     if (!checksum) {
+       return;

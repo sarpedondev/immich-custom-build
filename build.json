@@ -1,0 +1,8 @@
+{
+  "upstream_repository": "immich-app/immich",
+  "minimum_version": "v3.2.0-rc.1",
+  "patch_base": "e3900d7109fa5cae18ca19df0a588aeffb37c908",
+  "patches": ["patches/cloudflare-uploads.patch"],
+  "image": "ghcr.io/sarpedondev/immich-server",
+  "include_prereleases": false
+}
