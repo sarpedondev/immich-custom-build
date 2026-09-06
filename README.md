@@ -4,9 +4,11 @@ A small build recipe for official Immich releases with Cloudflare-safe chunked
 uploads in the Android client and server. There is no vendored Immich checkout
 or fork history here: the customization is `patches/cloudflare-uploads.patch`.
 
-The patch reproduces the six application files changed by
-[`sarpedondev/immich@67aefa791`](https://github.com/sarpedondev/immich/commit/67aefa7910ef7790a758a3b03e090203a1051824),
-based on official `v3.2.0-rc.1`. Existing server and Android behavior is preserved.
+The patch contains all six customized application files, based on official
+[`immich-app/immich@e3900d710`](https://github.com/immich-app/immich/commit/e3900d7109fa5cae18ca19df0a588aeffb37c908)
+(`v3.2.0-rc.1`). Builds fetch directly from official upstream and use only the
+patch stored here. The old personal fork is not needed and can be deleted after
+the container package migration below.
 
 ## Automatic builds
 
@@ -47,14 +49,29 @@ Use an image digest to pin the exact binary image. Release aliases move when a
 patch changes, and rebuilding identical source can still use updated external
 build dependencies.
 
-This repository needs **Write** access under **Manage Actions access** in the
-[existing package settings](https://github.com/users/sarpedondev/packages/container/immich-server/settings).
-Add `sarpedondev/immich-custom-build` there. Workflows then publish using their
-own `GITHUB_TOKEN`; no personal token is needed. [GitHub package access documentation](https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions).
+### Move the existing package off the old fork
 
-Keep the old fork's `docker-fork.yml` workflow disabled so the two repositories
-do not publish competing image aliases. Cluster and Renovate configuration are
-managed separately.
+The container package is scoped to the `sarpedondev` account, so its image name
+can stay `ghcr.io/sarpedondev/immich-server` while its linked repository changes.
+Before deleting the old personal fork:
+
+1. Open the [package settings](https://github.com/users/sarpedondev/packages/container/immich-server/settings).
+   Under **Repository source**, unlink `sarpedondev/immich` if it is still linked.
+2. On the package landing page, choose **Connect repository** and select
+   `sarpedondev/immich-custom-build`.
+3. In package settings, enable permission inheritance from the new repository,
+   or add it under **Manage Actions access** with **Write** access. Linking an
+   already-published package does not automatically enable permission inheritance.
+4. Confirm a successful image publish from this repository. The old fork can
+   then be deleted; it contains no source or credentials needed by this build.
+
+This relinks the existing package; it does not delete the package or its image
+versions. Workflows publish with this repository's `GITHUB_TOKEN`.
+[GitHub package migration documentation](https://docs.github.com/en/packages/learn-github-packages/connecting-a-repository-to-a-package#migrating-a-package-to-another-repository),
+[permission inheritance documentation](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#about-inheritance-of-access-permissions).
+
+Until the old fork is deleted, keep its `docker-fork.yml` workflow disabled.
+Cluster and Renovate configuration are managed separately.
 
 The Android APK is an Actions artifact retained for 90 days, with version and
 build identity in its name. It preserves the existing `cloudflare` application
