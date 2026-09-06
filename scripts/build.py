@@ -68,7 +68,7 @@ def select(root, config):
         raise ValueError(f"Previously built upstream tag {version} moved; inspect it before updating build-state.json")
     key = recipe_key(root, sha)
     should_build = os.environ.get("GITHUB_EVENT_NAME") != "schedule" or state.get("build_key") != key
-    return dict(version=version, upstream_sha=sha, build_key=key, image=config["image"], build=str(should_build).lower())
+    return dict(version=version, upstream_sha=sha, recipe_sha=run("git", "rev-parse", "HEAD", cwd=root), build_key=key, image=config["image"], build=str(should_build).lower())
 
 
 def prepare_source(root, config, destination, sha, repository=None):

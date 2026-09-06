@@ -27,12 +27,14 @@ jobs:
     outputs:
       version: ${{ steps.select.outputs.version }}
       upstream_sha: ${{ steps.select.outputs.upstream_sha }}
+      recipe_sha: ${{ steps.select.outputs.recipe_sha }}
       build_key: ${{ steps.select.outputs.build_key }}
       image: ${{ steps.select.outputs.image }}
       build: ${{ steps.select.outputs.build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           persist-credentials: false
       - name: Test release selection and patch application
         run: python3 -m unittest discover -s tests -v
@@ -54,6 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.recipe_sha }}
           persist-credentials: false
       - name: Fetch upstream and apply patch
         working-directory: .
@@ -78,6 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.recipe_sha }}
           persist-credentials: false
       - name: Fetch upstream and apply patch
         working-directory: .
@@ -129,6 +133,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.recipe_sha }}
           persist-credentials: false
       - name: Fetch upstream and apply patch
         env:
@@ -154,7 +159,7 @@ jobs:
             ${{ needs.prepare.outputs.image }}:build-${{ needs.prepare.outputs.build_key }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.recipe_sha }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             io.immich.upstream.revision=${{ needs.prepare.outputs.upstream_sha }}
             io.immich.custom.build=${{ needs.prepare.outputs.build_key }}
@@ -181,7 +186,7 @@ jobs:
           UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
           BUILD_KEY: ${{ needs.prepare.outputs.build_key }}
-          RECIPE_COMMIT: ${{ github.sha }}
+          RECIPE_COMMIT: ${{ needs.prepare.outputs.recipe_sha }}
           IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 scripts/build.py record

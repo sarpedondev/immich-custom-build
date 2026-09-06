@@ -108,7 +108,7 @@ class StateTests(unittest.TestCase):
             config = {"minimum_version": "v3.2.0-rc.1", "upstream_repository": "test/upstream", "include_prereleases": False, "image": "test/image"}
             state = {"version": "v3.2.0", "upstream_sha": "a" * 40, "build_key": "successful"}
             (root / build.STATE).write_text(json.dumps(state))
-            with patch.object(build, "run", side_effect=["[[]]", "a" * 40] * 2), patch.object(build, "recipe_key", side_effect=["successful", "changed"]), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule", "RELEASE_CHANNEL": "stable"}):
+            with patch.object(build, "run", side_effect=["[[]]", "a" * 40, "c" * 40] * 2), patch.object(build, "recipe_key", side_effect=["successful", "changed"]), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule", "RELEASE_CHANNEL": "stable"}):
                 self.assertEqual(build.select(root, config)["build"], "false")
                 self.assertEqual(build.select(root, config)["build"], "true")
 

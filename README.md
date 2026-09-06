@@ -84,7 +84,7 @@ git -C /tmp/immich-patched diff --binary --full-index HEAD -- mobile server > pa
 ```
 
 If you rebase the patch on a newer release, set `patch_base` in `build.json` to
-that checkout's upstream commit too. Commit and push the patch and configuration.
+that checkout's upstream commit and `minimum_version` to its release version too. Commit and push the patch and configuration.
 
 ## Tests
 
