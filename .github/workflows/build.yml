@@ -1,17 +1,14 @@
-name: Build patched Immich
+name: Auto-update patched Immich
 
 on:
   push:
     branches: [main]
   schedule:
-    - cron: "23 5 * * *"
+    # Upstream releases do not emit release events in this repository.
+    - cron: "7,22,37,52 * * * *"
+  repository_dispatch:
+    types: [immich-release]
   workflow_dispatch:
-    inputs:
-      channel:
-        description: Upstream release channel
-        type: choice
-        default: configured
-        options: [configured, stable, prerelease]
 
 concurrency:
   group: immich-publisher
@@ -42,8 +39,12 @@ jobs:
         id: select
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_CHANNEL: ${{ inputs.channel || vars.RELEASE_CHANNEL || 'configured' }}
         run: python3 scripts/build.py select
+      - name: Check that the patch applies to the selected release
+        if: steps.select.outputs.build == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.select.outputs.upstream_sha }}
+        run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
 
   server-checks:
     needs: prepare
@@ -181,7 +182,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-      - name: Record successful build for the next daily check
+      - name: Record successful update for the next release check
         env:
           UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}

@@ -25,17 +25,32 @@ def version_key(tag):
     return (int(major), int(minor), int(patch), pre is None, identifiers)
 
 
-def select_release(releases, current, include_prereleases):
-    candidates = [(version_key(current), current)]
+def is_release_candidate(tag):
+    return re.fullmatch(r"v?\d+\.\d+\.\d+-rc(?:[.-]?\d+)?(?:\+[0-9A-Za-z.-]+)?", tag, re.IGNORECASE) is not None
+
+
+def select_release(releases, current):
+    """Leave RCs for stable as soon as possible; never enter RCs from stable."""
+    floor = version_key(current)
+    stable = []
+    candidates = []
     for release in releases:
-        if release["draft"] or (release["prerelease"] and not include_prereleases):
+        if release["draft"]:
             continue
+        tag = release["tag_name"]
         try:
-            key = version_key(release["tag_name"])
+            key = version_key(tag)
         except ValueError:
             continue
-        candidates.append((key, release["tag_name"]))
-    return max(candidates)[1]
+        if key <= floor:
+            continue
+        if key[3] and not release["prerelease"]:
+            stable.append((key, tag))
+        elif is_release_candidate(current) and is_release_candidate(tag):
+            candidates.append((key, tag))
+    # A newer RC on another release line must not keep us on previews when
+    # there is already a stable upgrade available from our current version.
+    return max(stable or candidates)[1] if stable or candidates else current
 
 
 def recipe_key(root, upstream_sha):
@@ -56,19 +71,16 @@ def select(root, config):
     floor = max(config["minimum_version"], state.get("version", config["minimum_version"]), key=version_key)
     repository = config["upstream_repository"]
     pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
-    channel = os.environ.get("RELEASE_CHANNEL", "configured")
-    if channel not in {"configured", "stable", "prerelease"}:
-        raise ValueError(f"Unknown release channel: {channel}")
-    include_pre = config["include_prereleases"] if channel == "configured" else channel == "prerelease"
-    version = select_release([release for page in pages for release in page], floor, include_pre)
+    version = select_release([release for page in pages for release in page], floor)
     sha = run("gh", "api", f"repos/{repository}/commits/{version}", "--jq", ".sha")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Upstream did not return a commit SHA")
     if state.get("version") == version and state.get("upstream_sha") != sha:
         raise ValueError(f"Previously built upstream tag {version} moved; inspect it before updating build-state.json")
     key = recipe_key(root, sha)
-    should_build = os.environ.get("GITHUB_EVENT_NAME") != "schedule" or state.get("build_key") != key
-    return dict(version=version, upstream_sha=sha, recipe_sha=run("git", "rev-parse", "HEAD", cwd=root), build_key=key, image=config["image"], build=str(should_build).lower())
+    automatic = os.environ.get("GITHUB_EVENT_NAME") in {"schedule", "repository_dispatch"}
+    should_build = not automatic or state.get("build_key") != key
+    return dict(current_version=floor, version=version, upstream_sha=sha, recipe_sha=run("git", "rev-parse", "HEAD", cwd=root), build_key=key, image=config["image"], build=str(should_build).lower())
 
 
 def prepare_source(root, config, destination, sha, repository=None):
@@ -129,7 +141,11 @@ def main():
                 stream.writelines(f"{key}={value}\n" for key, value in result.items())
         if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(summary, "a") as stream:
-                stream.write(f"Upstream: `{result['version']}` (`{result['upstream_sha']}`)\n\nBuild: `{result['build_key']}`\n")
+                stream.write(
+                    f"Current: `{result['current_version']}`\n\n"
+                    f"Selected: `{result['version']}` (`{result['upstream_sha']}`)\n\n"
+                    f"Build needed: `{result['build']}`\n\nBuild identity: `{result['build_key']}`\n"
+                )
 
 
 if __name__ == "__main__":

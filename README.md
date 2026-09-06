@@ -12,14 +12,33 @@ the container package migration below.
 
 ## Automatic builds
 
-GitHub Actions runs daily at 05:23 UTC, on pushes to `main`, and through **Run
-workflow**. It selects the newest stable upstream release, without going below
-`minimum_version` in `build.json` or the last successfully built version.
-The initial RC therefore stays in use until a newer stable release exists.
+GitHub Actions checks official Immich releases every 15 minutes, on pushes to
+`main`, and through **Run workflow**. Release selection follows the last
+successfully published version in `build-state.json`. Before the first successful
+build, `minimum_version` in `build.json` is the current version (`v3.2.0-rc.1`).
 
-Set `include_prereleases` in `build.json` to `true`, or set repository variable
-`RELEASE_CHANNEL=prerelease`, to follow RCs. Manual runs offer `configured`,
-`stable`, and `prerelease` channels.
+The policy is automatic:
+
+- While the current version is an RC, newer RCs are eligible.
+- A newer stable release always takes priority over RCs, even a higher-version RC.
+- Once a stable version is successfully published, only stable updates are eligible.
+- Older versions, drafts, alpha/beta releases, and non-version tags are ignored.
+- Failed patch application, checks, or publishing leave the recorded version unchanged.
+
+For example: `v3.2.0-rc.1` → `v3.2.0-rc.2` → `v3.2.0` → `v3.2.1`.
+After reaching `v3.2.0`, `v3.3.0-rc.1` is ignored. Before reaching it, an older
+stable such as `v3.1.0` is never selected. There is no channel toggle to maintain.
+
+GitHub's `release` event applies to the workflow's own repository; it cannot
+subscribe directly to releases in `immich-app/immich`. Scheduled polling detects
+upstream release creation without requiring changes to upstream or another
+service. GitHub may delay scheduled runs, so detection is not instantaneous.
+The workflow also accepts `repository_dispatch` with type `immich-release` for
+an immediate notification if an external webhook relay is configured. No relay
+is installed by this repository. Dispatch payloads cannot override the source or
+release policy: the action always reads the official release feed.
+[GitHub event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release),
+[dispatch documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#repository_dispatch).
 
 For each candidate, the workflow:
 
@@ -32,8 +51,8 @@ For each candidate, the workflow:
 6. Commits `build-state.json` with the successful version, source SHA, recipe
    commit, image digest, and build identity.
 
-The daily job skips already successful inputs. Failed versions retry next day.
-Pushes and manual runs rebuild. The generated state file is excluded from the
+Scheduled and dispatch checks skip already successful inputs. Failed versions
+retry on subsequent checks. Pushes and manual runs rebuild. The generated state file is excluded from the
 build identity, so the bot's bookkeeping does not create an endless rebuild loop.
 
 ## Outputs and GitHub setup
@@ -111,8 +130,8 @@ actionlint .github/workflows/build.yml
 git diff --check
 ```
 
-Tests cover version selection, release channels, build identity, retry/skip
-behavior, and patch application to real temporary Git repositories, including
+Tests cover RC-to-stable transitions, stable preference, downgrade prevention,
+build identity, retry/skip behavior, and patch application to real temporary Git repositories, including
 an upstream conflict.
 
 ## License

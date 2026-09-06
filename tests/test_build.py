@@ -18,20 +18,48 @@ def release(tag, prerelease=False, draft=False):
 
 class ReleaseTests(unittest.TestCase):
     def test_never_downgrade_rc_to_older_stable(self):
-        self.assertEqual(build.select_release([release("v3.1.0")], "v3.2.0-rc.1", False), "v3.2.0-rc.1")
+        self.assertEqual(build.select_release([release("v3.1.0")], "v3.2.0-rc.1"), "v3.2.0-rc.1")
 
-    def test_stable_supersedes_rc(self):
-        self.assertEqual(build.select_release([release("v3.2.0")], "v3.2.0-rc.1", False), "v3.2.0")
+    def test_rc_updates_to_newer_rc_when_no_stable_upgrade_exists(self):
+        releases = [release("v3.1.0"), release("v3.2.0-rc.2", True)]
+        self.assertEqual(build.select_release(releases, "v3.2.0-rc.1"), "v3.2.0-rc.2")
 
-    def test_prereleases_opt_in(self):
-        releases = [release("v3.3.0-rc.1", True), release("v3.2.0")]
-        self.assertEqual(build.select_release(releases, "v3.1.0", False), "v3.2.0")
-        self.assertEqual(build.select_release(releases, "v3.1.0", True), "v3.3.0-rc.1")
+    def test_prefer_stable_upgrade_even_when_newer_rc_exists(self):
+        releases = [release("v3.3.0-rc.1", True), release("v3.2.0"), release("v3.2.0-rc.2", True)]
+        self.assertEqual(build.select_release(releases, "v3.2.0-rc.1"), "v3.2.0")
 
-    def test_numeric_order_and_ignore_drafts(self):
-        releases = [release("v3.9.0"), release("v3.10.0"), release("v4.0.0", draft=True), release("nightly")]
-        self.assertEqual(build.select_release(releases, "v3.8.0", True), "v3.10.0")
-        self.assertGreater(build.version_key("v3.2.0-rc.10"), build.version_key("v3.2.0-rc.2"))
+    def test_stable_never_enters_rc(self):
+        releases = [release("v3.3.0-rc.1", True), release("v3.2.1")]
+        self.assertEqual(build.select_release(releases, "v3.2.0"), "v3.2.1")
+        self.assertEqual(build.select_release(releases[:1], "v3.2.0"), "v3.2.0")
+
+    def test_stable_ignores_rc_even_if_upstream_mislabels_it(self):
+        self.assertEqual(build.select_release([release("v3.3.0-rc.1")], "v3.2.0"), "v3.2.0")
+
+    def test_rc_ignores_drafts_alpha_beta_and_nonversion_tags(self):
+        releases = [release("v4.0.0", draft=True), release("v3.3.0-beta.1", True), release("v3.3.0-alpha.1", True), release("nightly")]
+        self.assertEqual(build.select_release(releases, "v3.2.0-rc.1"), "v3.2.0-rc.1")
+
+    def test_numeric_order(self):
+        releases = [release("v3.9.0"), release("v3.10.0")]
+        self.assertEqual(build.select_release(releases, "v3.8.0"), "v3.10.0")
+        releases = [release("v3.2.0-rc.2", True), release("v3.2.0-rc.10", True)]
+        self.assertEqual(build.select_release(releases, "v3.2.0-rc.1"), "v3.2.0-rc.10")
+
+    def test_rc_to_stable_transition_is_one_way(self):
+        current = "v3.2.0-rc.1"
+        current = build.select_release([release("v3.2.0-rc.2", True)], current)
+        self.assertEqual(current, "v3.2.0-rc.2")
+        current = build.select_release([release("v3.2.0")], current)
+        self.assertEqual(current, "v3.2.0")
+        current = build.select_release([release("v3.3.0-rc.1", True)], current)
+        self.assertEqual(current, "v3.2.0")
+        current = build.select_release([release("v3.3.0")], current)
+        self.assertEqual(current, "v3.3.0")
+
+    def test_same_release_or_empty_feed_keeps_current(self):
+        self.assertEqual(build.select_release([release("v3.2.0")], "v3.2.0"), "v3.2.0")
+        self.assertEqual(build.select_release([], "v3.2.0-rc.1"), "v3.2.0-rc.1")
 
 
 class GitTests(unittest.TestCase):
@@ -102,22 +130,55 @@ class GitTests(unittest.TestCase):
 
 
 class StateTests(unittest.TestCase):
-    def test_daily_skip_and_failure_retry(self):
+    def test_automatic_skip_and_failure_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = {"minimum_version": "v3.2.0-rc.1", "upstream_repository": "test/upstream", "include_prereleases": False, "image": "test/image"}
+            config = {"minimum_version": "v3.2.0-rc.1", "upstream_repository": "test/upstream", "image": "test/image"}
             state = {"version": "v3.2.0", "upstream_sha": "a" * 40, "build_key": "successful"}
             (root / build.STATE).write_text(json.dumps(state))
-            with patch.object(build, "run", side_effect=["[[]]", "a" * 40, "c" * 40] * 2), patch.object(build, "recipe_key", side_effect=["successful", "changed"]), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule", "RELEASE_CHANNEL": "stable"}):
+            with patch.object(build, "run", side_effect=["[[]]", "a" * 40, "c" * 40] * 2), patch.object(build, "recipe_key", side_effect=["successful", "changed"]), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "schedule"}):
                 self.assertEqual(build.select(root, config)["build"], "false")
                 self.assertEqual(build.select(root, config)["build"], "true")
+
+    def test_dispatch_does_not_rebuild_successful_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {"minimum_version": "v3.2.0", "upstream_repository": "test/upstream", "image": "test/image"}
+            (root / build.STATE).write_text(json.dumps({"version": "v3.2.0", "upstream_sha": "a" * 40, "build_key": "successful"}))
+            with patch.object(build, "run", side_effect=["[[]]", "a" * 40, "c" * 40]), patch.object(build, "recipe_key", return_value="successful"), patch.dict(os.environ, {"GITHUB_EVENT_NAME": "repository_dispatch"}):
+                self.assertEqual(build.select(root, config)["build"], "false")
+
+    def test_channel_comes_from_success_record_not_initial_rc_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {"minimum_version": "v3.2.0-rc.1", "upstream_repository": "test/upstream", "image": "test/image"}
+            state_path = root / build.STATE
+            original = json.dumps({"version": "v3.2.0", "upstream_sha": "a" * 40})
+            state_path.write_text(original)
+            releases = json.dumps([[release("v3.3.0-rc.1", True)]])
+            with patch.object(build, "run", side_effect=[releases, "a" * 40, "c" * 40]), patch.object(build, "recipe_key", return_value="key"):
+                selected = build.select(root, config)
+            self.assertEqual(selected["current_version"], "v3.2.0")
+            self.assertEqual(selected["version"], "v3.2.0")
+            self.assertEqual(state_path.read_text(), original)
+
+    def test_selecting_stable_does_not_record_success_early(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {"minimum_version": "v3.2.0-rc.1", "upstream_repository": "test/upstream", "image": "test/image"}
+            state_path = root / build.STATE
+            original = json.dumps({"version": "v3.2.0-rc.1", "upstream_sha": "a" * 40})
+            state_path.write_text(original)
+            with patch.object(build, "run", side_effect=[json.dumps([[release("v3.2.0")]]), "b" * 40, "c" * 40]), patch.object(build, "recipe_key", return_value="key"):
+                self.assertEqual(build.select(root, config)["version"], "v3.2.0")
+            self.assertEqual(state_path.read_text(), original)
 
     def test_rejects_moved_upstream_tag(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = {"minimum_version": "v3.2.0", "upstream_repository": "test/upstream", "include_prereleases": False}
+            config = {"minimum_version": "v3.2.0", "upstream_repository": "test/upstream"}
             (root / build.STATE).write_text(json.dumps({"version": "v3.2.0", "upstream_sha": "a" * 40}))
-            with patch.object(build, "run", side_effect=["[[]]", "b" * 40]), patch.dict(os.environ, {"RELEASE_CHANNEL": "stable"}):
+            with patch.object(build, "run", side_effect=["[[]]", "b" * 40]):
                 with self.assertRaisesRegex(ValueError, "moved"):
                     build.select(root, config)
 
