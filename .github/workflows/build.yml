@@ -108,11 +108,31 @@ jobs:
         run: mise //mobile:analyze:dart
       - name: Run mobile unit tests
         run: mise //mobile:test
+      - name: Restore persistent Android signing key
+        working-directory: .
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > source/mobile/android/key.jks
+          test -s source/mobile/android/key.jks
       - name: Build Android APK
         working-directory: source/mobile
         env:
           PR_NUMBER: cloudflare
-        run: flutter build apk --release
+          ALIAS: immich-cloudflare
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          test -n "$ANDROID_KEY_PASSWORD"
+          flutter build apk --release \
+            --build-name="${UPSTREAM_VERSION#v}-custom.${GITHUB_RUN_NUMBER}" \
+            --build-number="$((100000000 + GITHUB_RUN_NUMBER))"
+      - name: Remove signing key
+        if: always()
+        run: rm -f mobile/android/key.jks
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -172,8 +192,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  record:
+  release:
     needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.recipe_sha }}
+          persist-credentials: false
+      - name: Publish APK release for Obtainium
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          RECIPE_COMMIT: ${{ needs.prepare.outputs.recipe_sha }}
+          BUILD_KEY: ${{ needs.prepare.outputs.build_key }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: python3 scripts/release.py
+
+  record:
+    needs: [prepare, publish, release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

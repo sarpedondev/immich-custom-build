@@ -48,7 +48,8 @@ For each candidate, the workflow:
 4. Runs server formatting, lint, type checks, and unit tests; generates mobile
    code, runs Dart analysis and unit tests, and builds the Android APK.
 5. Builds and pushes the `linux/amd64` server image only after both jobs pass.
-6. Commits `build-state.json` with the successful version, source SHA, recipe
+6. Publishes a GitHub Release containing the signed universal Android APK and SHA-256 checksum.
+7. Commits `build-state.json` with the successful version, source SHA, recipe
    commit, image digest, and build identity.
 
 Scheduled and dispatch checks skip already successful inputs. Failed versions
@@ -92,11 +93,31 @@ versions. Workflows publish with this repository's `GITHUB_TOKEN`.
 Until the old fork is deleted, keep its `docker-fork.yml` workflow disabled.
 Cluster and Renovate configuration are managed separately.
 
-The Android APK is an Actions artifact retained for 90 days, with version and
-build identity in its name. It preserves the existing `cloudflare` application
-ID suffix and debug-signing fallback. Installing APK updates over an existing
-installation requires a consistent signing key; persistent release signing is
-not configured by this repository. APKs are not installed on devices automatically.
+### Android releases and Obtainium
+
+Add `https://github.com/sarpedondev/immich-custom-build` in Obtainium.
+Enable **Include prereleases** while the server is on an RC. The build policy
+switches to stable automatically and then stops publishing RCs.
+Each release contains a single universal `immich-cloudflare.apk` and `SHA256SUMS`.
+Releases are published only after the server image and all checks succeed.
+
+Every successful build gets its own release tag, including pushes that rebuild
+the same upstream version: `v3.2.0-rc.3-custom.123-prcloudflare`. The APK version
+name matches the tag without `v`; its Android version code is `100000000` plus
+GitHub's workflow run number. Keep this workflow's run-number history when
+migrating repositories or renaming the workflow file to avoid lowering version codes.
+Rerunning an already published run leaves its release unchanged.
+
+The application ID remains `app.alextran.immich.prcloudflare`. Signing uses
+repository secrets `ANDROID_KEYSTORE_BASE64` and `ANDROID_SIGNING_PASSWORD`,
+with key alias `immich-cloudflare`. Missing secrets fail the build rather than
+falling back to a temporary key. Keep the original key for all future updates.
+The local ignored `signing/` directory holds a protected backup; store a secure
+backup elsewhere before deleting this checkout. Never commit it.
+
+An older debug-signed APK may need a **one-time uninstall and reinstall** to
+switch to this key, which clears local app settings. Subsequent releases use the
+same signing identity. APKs also remain available as Actions artifacts for 90 days.
 
 ## Work locally
 
