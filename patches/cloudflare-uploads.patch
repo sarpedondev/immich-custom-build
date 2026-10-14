@@ -1,5 +1,5 @@
 diff --git a/mobile/lib/repositories/upload.repository.dart b/mobile/lib/repositories/upload.repository.dart
-index 136684093ce4eb38f8c763e8c67964a811cedbc3..98c884ec0f0d45142f84b0089efb865ff39a09e9 100644
+index 25960c6a50cdf4dcce543bd71b5188cfa718eb58..0d8d3b7933e35101bb2dee1e67d5ebf860871143 100644
 --- a/mobile/lib/repositories/upload.repository.dart
 +++ b/mobile/lib/repositories/upload.repository.dart
 @@ -1,6 +1,7 @@
@@ -10,7 +10,7 @@ index 136684093ce4eb38f8c763e8c67964a811cedbc3..98c884ec0f0d45142f84b0089efb865f
  
  import 'package:background_downloader/background_downloader.dart';
  import 'package:hooks_riverpod/hooks_riverpod.dart';
-@@ -14,6 +15,8 @@ import 'package:logging/logging.dart';
+@@ -13,6 +14,8 @@ import 'package:logging/logging.dart';
  
  final uploadRepositoryProvider = Provider((ref) => UploadRepository());
  
@@ -19,7 +19,7 @@ index 136684093ce4eb38f8c763e8c67964a811cedbc3..98c884ec0f0d45142f84b0089efb865f
  class UploadRepository {
    final Logger logger = Logger('UploadRepository');
    void Function(TaskStatusUpdate)? onUploadStatus;
-@@ -99,6 +102,19 @@ class UploadRepository {
+@@ -68,6 +71,19 @@ class UploadRepository {
    }) async {
      final String savedEndpoint = Store.get(StoreKey.serverEndpoint);
  
@@ -39,7 +39,7 @@ index 136684093ce4eb38f8c763e8c67964a811cedbc3..98c884ec0f0d45142f84b0089efb865f
      ProgressMultipartRequest buildRequest() {
        final request = ProgressMultipartRequest(
          'POST',
-@@ -159,6 +175,128 @@ class UploadRepository {
+@@ -128,6 +144,128 @@ class UploadRepository {
        return UploadResult.error(errorMessage: error.toString());
      }
    }
@@ -169,7 +169,7 @@ index 136684093ce4eb38f8c763e8c67964a811cedbc3..98c884ec0f0d45142f84b0089efb865f
  
  class ProgressMultipartRequest extends MultipartRequest with Abortable {
 diff --git a/server/src/controllers/asset-media.controller.ts b/server/src/controllers/asset-media.controller.ts
-index c357c1343062de3ee88e0ea938b2c0174164c86c..59407b0039ac5a09dafc03db065051798a10fc11 100644
+index 8ea527e45bcb35391ea4f51ae785f5a6025d9d7f..c603881430a7f00e523f10548863dee6b18ad397 100644
 --- a/server/src/controllers/asset-media.controller.ts
 +++ b/server/src/controllers/asset-media.controller.ts
 @@ -7,7 +7,10 @@ import {
@@ -183,8 +183,8 @@ index c357c1343062de3ee88e0ea938b2c0174164c86c..59407b0039ac5a09dafc03db06505179
    Query,
    Req,
    Res,
-@@ -24,6 +27,7 @@ import {
- } from 'src/dtos/asset-media-response.dto';
+@@ -25,6 +28,7 @@ import {
+ } from 'src/dtos/asset-media-response.dto.js';
  import {
    AssetBulkUploadCheckDto,
 +  AssetChunkUploadCreateDto,
@@ -224,7 +224,7 @@ index c357c1343062de3ee88e0ea938b2c0174164c86c..59407b0039ac5a09dafc03db06505179
    @FileResponse()
    @Authenticated({ permission: Permission.AssetDownload, sharedLink: true })
 diff --git a/server/src/dtos/asset-media.dto.ts b/server/src/dtos/asset-media.dto.ts
-index 88542a11e338039eadd27dff6e459878a967914a..76b0adbad186909001a59c8e92386eedf9da7b09 100644
+index d4eb397bede2a531212b411abb70a2251977035f..be18cbfa50b342e3703f6cf692c4dcaecd8ab194 100644
 --- a/server/src/dtos/asset-media.dto.ts
 +++ b/server/src/dtos/asset-media.dto.ts
 @@ -63,6 +63,14 @@ const AssetMediaCreateSchema = AssetMediaBaseSchema.extend({
@@ -249,10 +249,10 @@ index 88542a11e338039eadd27dff6e459878a967914a..76b0adbad186909001a59c8e92386eed
 +export class AssetChunkUploadCreateDto extends createZodDto(AssetChunkUploadCreateSchema) {}
  export class AssetBulkUploadCheckDto extends createZodDto(AssetBulkUploadCheckSchema) {}
 diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
-index 7ee74d98706c8a4fa4cd51fa93cbdf9efadec342..cf52772dc6dcb93fa918b0be1c3d0398595c23f2 100644
+index eaed895531ab0e1a47087425e4b3275a8a9cd82e..3c37f218a526163e4282c2a197941557e252cffd 100644
 --- a/server/src/repositories/storage.repository.ts
 +++ b/server/src/repositories/storage.repository.ts
-@@ -76,8 +76,8 @@ export class StorageRepository {
+@@ -79,8 +79,8 @@ export class StorageRepository {
      return fs.writeFile(filepath, buffer, { flag: 'wx' });
    }
  
@@ -264,24 +264,24 @@ index 7ee74d98706c8a4fa4cd51fa93cbdf9efadec342..cf52772dc6dcb93fa918b0be1c3d0398
  
    createOrOverwriteFile(filepath: string, buffer: Buffer) {
 diff --git a/server/src/services/asset-media.service.spec.ts b/server/src/services/asset-media.service.spec.ts
-index 14527debba61f6f127c49423ab60f58695c2a648..39e9ed58d4a5d53268c0a10122d1c4ef8cda87cc 100644
+index 444a1fa56a81d3dc663eaf60e507bf59441b23b8..a1d8f1e3f1ad3aa37429d74750d1223d9617b416 100644
 --- a/server/src/services/asset-media.service.spec.ts
 +++ b/server/src/services/asset-media.service.spec.ts
-@@ -6,7 +6,12 @@ import {
- } from '@nestjs/common';
- import { AssetFile } from 'src/database';
- import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto';
--import { AssetMediaCreateDto, AssetMediaSize, UploadFieldName } from 'src/dtos/asset-media.dto';
+@@ -7,7 +7,12 @@ import {
+ import type { UploadBody } from 'src/types.js';
+ import { AssetFile } from 'src/database.js';
+ import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto.js';
+-import { AssetMediaCreateDto, AssetMediaSize, UploadFieldName } from 'src/dtos/asset-media.dto.js';
 +import {
 +  AssetChunkUploadCreateDto,
 +  AssetMediaCreateDto,
 +  AssetMediaSize,
 +  UploadFieldName,
-+} from 'src/dtos/asset-media.dto';
- import { MapAsset } from 'src/dtos/asset-response.dto';
- import { AssetEditAction } from 'src/dtos/editing.dto';
- import { AssetFileType, AssetType, AssetVisibility, CacheControl, JobName } from 'src/enum';
-@@ -177,6 +182,32 @@ describe(AssetMediaService.name, () => {
++} from 'src/dtos/asset-media.dto.js';
+ import { MapAsset } from 'src/dtos/asset-response.dto.js';
+ import { AssetEditAction } from 'src/dtos/editing.dto.js';
+ import { AssetFileType, AssetType, AssetVisibility, CacheControl, JobName } from 'src/enum.js';
+@@ -178,6 +183,32 @@ describe(AssetMediaService.name, () => {
      ({ sut, mocks } = newTestService(AssetMediaService));
    });
  
@@ -315,7 +315,7 @@ index 14527debba61f6f127c49423ab60f58695c2a648..39e9ed58d4a5d53268c0a10122d1c4ef
      it('should return if checksum is undefined', async () => {
        await expect(sut.getUploadAssetIdByChecksum(authStub.admin)).resolves.toBe(undefined);
 diff --git a/server/src/services/asset-media.service.ts b/server/src/services/asset-media.service.ts
-index 1bb9d1e5b6fce87cff143dedc39f92af44bc19b7..aef2e50e0077789de1fc32addc74964a179e7366 100644
+index b12161e6184e917ce9490381cdbcdda2c125cc18..0c0c1504e7a6c98c2df72caa107f9524a50b5e7a 100644
 --- a/server/src/services/asset-media.service.ts
 +++ b/server/src/services/asset-media.service.ts
 @@ -1,4 +1,8 @@
@@ -325,10 +325,10 @@ index 1bb9d1e5b6fce87cff143dedc39f92af44bc19b7..aef2e50e0077789de1fc32addc74964a
 +import { Transform } from 'node:stream';
 +import { pipeline } from 'node:stream/promises';
  import sanitize from 'sanitize-filename';
- import { StorageCore } from 'src/cores/storage.core';
- import { Asset, AuthSharedLink } from 'src/database';
-@@ -11,6 +15,7 @@ import {
- } from 'src/dtos/asset-media-response.dto';
+ import type { UploadFile, UploadRequest } from 'src/types.js';
+ import { StorageCore } from 'src/cores/storage.core.js';
+@@ -12,6 +16,7 @@ import {
+ } from 'src/dtos/asset-media-response.dto.js';
  import {
    AssetBulkUploadCheckDto,
 +  AssetChunkUploadCreateDto,

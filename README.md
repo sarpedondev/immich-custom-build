@@ -5,8 +5,8 @@ uploads in the Android client and server. There is no vendored Immich checkout
 or fork history here: the customization is `patches/cloudflare-uploads.patch`.
 
 The patch contains all six customized application files, based on official
-[`immich-app/immich@e3900d710`](https://github.com/immich-app/immich/commit/e3900d7109fa5cae18ca19df0a588aeffb37c908)
-(`v3.2.0-rc.1`). Builds fetch directly from official upstream and use only the
+[`immich-app/immich@db6e11ecc`](https://github.com/immich-app/immich/commit/db6e11ecc851228aec9c525abb0ee026d1f5055e)
+(`v3.3.1`). Builds fetch directly from official upstream and use only the
 patch stored here. The old personal fork is not needed and can be deleted after
 the container package migration below.
 
@@ -15,7 +15,7 @@ the container package migration below.
 GitHub Actions checks official Immich releases every 15 minutes, on pushes to
 `main`, and through **Run workflow**. Release selection follows the last
 successfully published version in `build-state.json`. Before the first successful
-build, `minimum_version` in `build.json` is the current version (`v3.2.0-rc.1`).
+build, `minimum_version` in `build.json` is the current version (`v3.3.1`).
 
 The policy is automatic:
 
