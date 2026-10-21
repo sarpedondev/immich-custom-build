@@ -1,8 +1,8 @@
 {
-  "version": "v3.3.4",
-  "upstream_sha": "69e0cb8606137c4f8dc0e7207a672ff8be39f358",
-  "build_key": "95030c88636d85c5791d318fe87a739ee8766724120b3e6c42f6f4c9a81d1d9e",
-  "recipe_commit": "11c19030cf774d13afdfcfb750cdf5f7cf15ab86",
-  "image_digest": "sha256:37a5b2d6732ed7f267e264fe720573ed9fa58bc1d3114d0d5f3cf216296c2d9d",
-  "run_url": "https://github.com/sarpedondev/immich-custom-build/actions/runs/39427040976"
+  "version": "v3.3.5",
+  "upstream_sha": "8303cb117e197c700332b33b61b45314c9cc5bb4",
+  "build_key": "c07d39624c6f79359b3ff9ed6df9923dc41e92e6279f3525c2fb5129bf7ce0d8",
+  "recipe_commit": "2e87a542c55f33237e7441dee862d18bfe38a322",
+  "image_digest": "sha256:a2e5bff0cf29aa480efde3ceaec353538e44676c082fcaac3a2729a7348a060a",
+  "run_url": "https://github.com/sarpedondev/immich-custom-build/actions/runs/39657570053"
 }
