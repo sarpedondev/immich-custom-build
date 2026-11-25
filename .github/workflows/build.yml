@@ -64,7 +64,7 @@ jobs:
         env:
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
         run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
-      - uses: immich-app/devtools/actions/use-mise@06a9ef925332c91be647d6256642b86b398592c8 # use-mise-action-v3.2.1
+      - uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06 # use-mise-action-v3.2.3
         with:
           github_token: ${{ github.token }}
           working_directory: ./source
@@ -89,17 +89,14 @@ jobs:
         env:
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
         run: python3 scripts/build.py source source --commit "$UPSTREAM_SHA"
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
-        with:
-          distribution: zulu
-          java-version: "17"
-      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
-        with:
-          packages: ""
-      - uses: immich-app/devtools/actions/use-mise@06a9ef925332c91be647d6256642b86b398592c8 # use-mise-action-v3.2.1
+      # Java and Ruby come from upstream's mobile/mise.toml since Immich v3.4.
+      - uses: immich-app/devtools/actions/use-mise@caac7f7e4298458a14238959504f411fc6cc7f06 # use-mise-action-v3.2.3
         with:
           github_token: ${{ github.token }}
           working_directory: ./source/mobile
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ""
       - name: Install dependencies
         run: mise //mobile:install:ci
       - name: Generate mobile sources
@@ -221,6 +218,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -234,3 +232,39 @@ jobs:
           IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 scripts/build.py record
+      - name: Close open build failure issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          for number in $(gh issue list --state open --label build-failure --json number --jq '.[].number'); do
+            gh issue close "$number" --comment "Fixed: $UPSTREAM_VERSION was built successfully in $RUN_URL"
+          done
+
+  notify-failure:
+    needs: [prepare, server-checks, android, publish, release, record]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue so the failure triggers a notification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Patched Immich build failed${UPSTREAM_VERSION:+ for $UPSTREAM_VERSION}"
+          gh label create build-failure --color B60205 --description "Automated build failed" --force
+          if gh issue list --state open --label build-failure --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "An open issue already tracks this failure; not notifying again."
+            exit 0
+          fi
+          gh issue create --title "$title" --label build-failure \
+            --body "The scheduled build failed: $RUN_URL
+
+          This issue is closed automatically after the next successful build."
